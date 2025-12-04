@@ -36,11 +36,11 @@
  ********************************************************/
 team_t team = {
   /* Team name */
-  "",
+  "team skib",
   /* First member's full name */
-  "",
+  "dylan carter",
   /* First member's email address */
-  "",
+  "dyca3990@colorado.edu",
   /* Second member's full name (leave blank if none) */
   "",
   /* Second member's email address (leave blank if none) */
@@ -59,6 +59,8 @@ team_t team = {
 #define DSIZE       8       /* doubleword size (bytes) */
 #define CHUNKSIZE  (1<<12)  /* initial heap size (bytes) */
 #define OVERHEAD    8       /* overhead of header and footer (bytes) */
+#define ALIGN(size) (((size) + (DSIZE - 1)) & ~0x7)
+#define NEXT_FREE(bp) (*(char **)(bp))
 
 static inline int MAX(int x, int y) {
   return x > y ? x : y;
@@ -119,9 +121,8 @@ static inline void* PREV_BLKP(void *bp){
 //
 // Global Variables
 //
-
+static char *free_listp;
 static char *heap_listp;  /* pointer to first block */  
-
 //
 // function prototypes for internal helper routines
 //
@@ -131,15 +132,63 @@ static void *find_fit(uint32_t asize);
 static void *coalesce(void *bp);
 static void printblock(void *bp); 
 static void checkblock(void *bp);
+static void insert_free(void *bp);
+static void remove_free(void *bp); 
+
+static void insert_free(void *bp)
+{
+  NEXT_FREE(bp) = free_listp;
+  free_listp = bp;
+}
+
+static void remove_free(void *bp)
+{
+  if(free_listp == NULL)
+  {
+    return; 
+  }
+  if(free_listp == bp)
+  {
+    free_listp = NEXT_FREE(bp);
+    return; 
+  }
+
+  void *prev = free_listp;
+  while (prev != NULL && NEXT_FREE(prev) != bp)
+  {
+    prev = NEXT_FREE(prev); 
+  }
+
+  if(prev != NULL)
+  {
+    NEXT_FREE(prev) = NEXT_FREE(bp); 
+  }
+}
 
 //
 // mm_init - Initialize the memory manager 
 //
 int mm_init(void) 
 {
-  //
-  // You need to provide this
-  //
+  if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
+  {
+    return -1; 
+  }
+
+  free_listp = NULL;
+
+  PUT(heap_listp, 0);
+  PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));
+  PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
+  PUT(heap_listp + (3 * WSIZE), PACK(0,1)); 
+
+  heap_listp += (2 * WSIZE); 
+
+  if(extend_heap(CHUNKSIZE / WSIZE) == NULL)
+  {
+    return -1; 
+  }
+ 
   return 0;
 }
 
@@ -149,10 +198,29 @@ int mm_init(void)
 //
 static void *extend_heap(uint32_t words) 
 {
-  //
-  // You need to provide this
-  //
-  return NULL;
+  char *bp;
+  uint32_t size; 
+
+  if(words % 2)
+  {
+    size = (words + 1) * WSIZE;
+  }
+  else
+  {
+    size = words * WSIZE; 
+  }
+
+  if((bp = mem_sbrk(size)) == (void *)-1)
+  {
+    return NULL;
+  }
+
+  PUT(HDRP(bp), PACK(size, 0));
+  PUT(FTRP(bp), PACK(size, 0)); 
+
+  PUT(HDRP(NEXT_BLKP(bp)), PACK(0,1)); 
+
+  return coalesce(bp);
 }
 
 
@@ -163,7 +231,16 @@ static void *extend_heap(uint32_t words)
 //
 static void *find_fit(uint32_t asize)
 {
-  return NULL; /* no fit */
+    void *bp; 
+
+    for(bp = free_listp; bp != NULL; bp = NEXT_FREE(bp))
+    {
+      if(asize <= GET_SIZE(HDRP(bp)))
+      {
+        return bp; 
+      }
+    }
+    return NULL;
 }
 
 // 
@@ -171,9 +248,16 @@ static void *find_fit(uint32_t asize)
 //
 void mm_free(void *bp)
 {
-  //
-  // You need to provide this
-  //
+  if (bp == NULL)
+  {
+    return; 
+  }
+
+  uint32_t size = GET_SIZE(HDRP(bp)); 
+
+  PUT(HDRP(bp), PACK(size, 0));
+  PUT(FTRP(bp), PACK(size, 0)); 
+  coalesce(bp); 
 }
 
 //
@@ -181,7 +265,45 @@ void mm_free(void *bp)
 //
 static void *coalesce(void *bp) 
 {
-  return bp;
+  int prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+  int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+  uint32_t size = GET_SIZE(HDRP(bp)); 
+
+  if(!prev_alloc)
+  {
+    remove_free(PREV_BLKP(bp));
+  }
+  if(!next_alloc)
+  {
+    remove_free(NEXT_BLKP(bp));
+  }
+  if(prev_alloc && next_alloc)
+  {
+    return bp; 
+  }
+  else if (prev_alloc && !next_alloc)
+  {
+    size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+  }
+  else if (!prev_alloc && next_alloc)
+  {
+    size += GET_SIZE(HDRP(PREV_BLKP(bp)));
+    bp = PREV_BLKP(bp);
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0)); 
+  }
+  else
+  {
+    size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
+    bp = PREV_BLKP(bp);
+    PUT(HDRP(bp), PACK(size, 0)); 
+    PUT(FTRP(bp), PACK(size, 0)); 
+  }
+  insert_free(bp); 
+
+  return bp; 
 }
 
 //
@@ -189,10 +311,35 @@ static void *coalesce(void *bp)
 //
 void *mm_malloc(uint32_t size) 
 {
-  //
-  // You need to provide this
-  //
-  return NULL;
+  uint32_t asize; 
+  uint32_t extendsize; 
+  char *bp; 
+
+  if(size == 0)
+  {
+    return NULL; 
+  }
+
+  asize = ALIGN(size + OVERHEAD);
+  if(asize < 2 * DSIZE)
+  {
+    asize = 2 * DSIZE; 
+  }
+
+  if((bp = find_fit(asize)) != NULL)
+  {
+    place(bp, asize);
+    return bp; 
+  }
+
+  extendsize = MAX(asize, CHUNKSIZE);
+  if((bp = extend_heap(extendsize / WSIZE)) == NULL)
+  {
+    return NULL;
+  }
+
+  place(bp, asize);
+  return bp; 
 } 
 
 //
@@ -204,6 +351,26 @@ void *mm_malloc(uint32_t size)
 //
 static void place(void *bp, uint32_t asize)
 {
+  uint32_t csize = GET_SIZE(HDRP(bp));
+
+  remove_free(bp);
+
+  if((csize - asize) >= (2 * DSIZE))
+  {
+    PUT(HDRP(bp), PACK(asize, 1));
+    PUT(FTRP(bp), PACK(asize, 1));
+
+    void *next_bp = NEXT_BLKP(bp);
+    PUT(HDRP(next_bp), PACK(csize - asize, 0));
+    PUT(FTRP(next_bp), PACK(csize - asize, 0));
+
+    insert_free(next_bp);
+  }
+  else
+  {
+    PUT(HDRP(bp), PACK(csize, 1));
+    PUT(FTRP(bp), PACK(csize, 1));
+  }
 }
 
 
@@ -212,22 +379,80 @@ static void place(void *bp, uint32_t asize)
 //
 void *mm_realloc(void *ptr, uint32_t size)
 {
-  void *newp;
-  uint32_t copySize;
+    // Standard realloc semantics
+    if (ptr == NULL) {
+        return mm_malloc(size);
+    }
+    if (size == 0) {
+        mm_free(ptr);
+        return NULL;
+    }
 
-  newp = mm_malloc(size);
-  if (newp == NULL) {
-    printf("ERROR: mm_malloc failed in mm_realloc\n");
-    exit(1);
-  }
-  copySize = GET_SIZE(HDRP(ptr));
-  if (size < copySize) {
-    copySize = size;
-  }
-  memcpy(newp, ptr, copySize);
-  mm_free(ptr);
-  return newp;
+    uint32_t oldsize = GET_SIZE(HDRP(ptr));
+
+    // Compute adjusted size, same way as mm_malloc
+    uint32_t asize = ALIGN(size + OVERHEAD);
+    if (asize < 2 * DSIZE) {
+        asize = 2 * DSIZE;
+    }
+
+    // Case 1: new size fits in the old block → shrink in place
+    if (asize <= oldsize) {
+        uint32_t remainder = oldsize - asize;
+
+        if (remainder >= 2 * DSIZE) {
+            // Shrink current block
+            PUT(HDRP(ptr), PACK(asize, 1));
+            PUT(FTRP(ptr), PACK(asize, 1));
+
+            // Create a new free block with the leftover space
+            void *next_bp = NEXT_BLKP(ptr);
+            PUT(HDRP(next_bp), PACK(remainder, 0));
+            PUT(FTRP(next_bp), PACK(remainder, 0));
+
+            // Coalesce new free block with neighbors and
+            // insert it into the free list
+            coalesce(next_bp);
+        }
+        // If remainder is too small, just keep the slightly bigger block
+        return ptr;
+    }
+
+    // Case 2: try to expand into next block if it's free and large enough
+    void *next_bp = NEXT_BLKP(ptr);
+    if (!GET_ALLOC(HDRP(next_bp))) {
+        uint32_t next_size = GET_SIZE(HDRP(next_bp));
+        uint32_t combined = oldsize + next_size;
+
+        if (combined >= asize) {
+            // We're going to consume the next free block
+            remove_free(next_bp);
+
+            // Use combined space for this block
+            PUT(HDRP(ptr), PACK(combined, 1));
+            PUT(FTRP(ptr), PACK(combined, 1));
+
+            return ptr;
+        }
+    }
+
+    // Case 3: cannot grow in place → fall back to malloc+copy
+    void *newp = mm_malloc(size);
+    if (newp == NULL) {
+        printf("ERROR: mm_malloc failed in mm_realloc\n");
+        exit(1);
+    }
+
+    // Copy the payload (not the header/footer)
+    uint32_t copySize = oldsize - OVERHEAD;
+    if (size < copySize) {
+        copySize = size;
+    }
+    memcpy(newp, ptr, copySize);
+    mm_free(ptr);
+    return newp;
 }
+
 
 //
 // mm_checkheap - Check the heap for consistency 
